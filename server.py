@@ -446,6 +446,78 @@ def buscar_pedido_bling(id_pedido: int) -> str:
     return resultado
 
 @mcp.tool()
+def relatorio_mais_vendidos_bling(data_inicio: str = "2026-01-01", data_fim: str = "", top_n: int = 20) -> str:
+    """
+    (ExpansaoPet) Gera relatorio dos produtos mais vendidos no periodo.
+    data_inicio: YYYY-MM-DD (padrao: 2026-01-01)
+    data_fim: YYYY-MM-DD (padrao: hoje)
+    top_n: quantos produtos mostrar (padrao: 20)
+    """
+    from collections import defaultdict
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from datetime import date as _date
+
+    if not data_fim:
+        data_fim = str(_date.today())
+
+    todos_ids: list[int] = []
+    pagina = 1
+    while True:
+        params = {"pagina": pagina, "limite": 100, "dataInicial": data_inicio, "dataFinal": data_fim}
+        data = _bling_get("/pedidos/vendas", params).get("data", [])
+        if not data:
+            break
+        todos_ids.extend([p["id"] for p in data])
+        if len(data) < 100:
+            break
+        pagina += 1
+
+    if not todos_ids:
+        return "Nenhum pedido encontrado no periodo " + data_inicio + " a " + data_fim + "."
+
+    def _buscar(id_pedido: int) -> dict:
+        try:
+            return _bling_get(f"/pedidos/vendas/{id_pedido}").get("data", {})
+        except Exception:
+            return {}
+
+    produtos: dict = defaultdict(lambda: {"qtd": 0.0, "receita": 0.0, "pedidos": 0})
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(_buscar, id_p): id_p for id_p in todos_ids}
+        for fut in as_completed(futures):
+            pedido = fut.result()
+            if not pedido:
+                continue
+            for item in pedido.get("itens", []):
+                prod = item.get("produto", {})
+                nome = prod.get("nome") or item.get("descricao") or "?"
+                codigo = prod.get("codigo") or "-"
+                chave = nome + "||" + codigo
+                qtd = float(item.get("quantidade", 0))
+                valor = float(item.get("valor", 0))
+                produtos[chave]["qtd"] += qtd
+                produtos[chave]["receita"] += qtd * valor
+                produtos[chave]["pedidos"] += 1
+
+    if not produtos:
+        return "Nenhum produto encontrado nos pedidos do periodo."
+
+    ranking = sorted(produtos.items(), key=lambda x: x[1]["qtd"], reverse=True)[:top_n]
+    header = "**Produtos Mais Vendidos (" + data_inicio + " a " + data_fim + ") - " + str(len(todos_ids)) + " pedidos**"
+    linhas = [header, ""]
+    linhas.append("| # | Produto | Cod | Qtd Vendida | Receita Total | Em Pedidos |")
+    linhas.append("|---|---------|-----|-------------|---------------|------------|")
+    for i, (chave, dados) in enumerate(ranking, 1):
+        nome, codigo = chave.split("||", 1)
+        nome_curto = (nome[:57] + "...") if len(nome) > 60 else nome
+        row = "| " + str(i) + " | " + nome_curto + " | " + codigo
+        row += " | " + str(int(dados["qtd"])) + " | R$ " + format(dados["receita"], ".2f") + " | " + str(dados["pedidos"]) + " |"
+        linhas.append(row)
+
+    return chr(10).join(linhas)
+
+@mcp.tool()
 def consultar_estoque_bling(id_produto: int) -> str:
     """(ExpansaoPet) Consulta o saldo de estoque de um produto pelo seu ID."""
     token = _bling_get_token()
