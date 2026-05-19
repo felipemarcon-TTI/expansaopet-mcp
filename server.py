@@ -98,7 +98,7 @@ class _AuthMiddleware:
         await self.app(scope, receive, send)
 
 
-mcp = FastMCP("ExpansaoPet MCP", host="0.0.0.0", port=_PORT)
+mcp = FastMCP("ExpansaoPet Bling", host="0.0.0.0", port=_PORT)
 
 _bling_pending_state: dict[str, str] = {}
 
@@ -334,7 +334,7 @@ para que o servidor se autentique automaticamente após restarts:</p>
 
 @mcp.tool()
 def autenticar_bling() -> str:
-    """Inicia o fluxo OAuth com o Bling! e salva os tokens localmente."""
+    """(ExpansaoPet) Inicia o fluxo OAuth com o Bling! e salva os tokens localmente."""
     _require_write()
     if not BLING_CLIENT_ID or not BLING_CLIENT_SECRET:
         return "Configure as variáveis BLING_CLIENT_ID e BLING_CLIENT_SECRET antes de autenticar."
@@ -353,7 +353,7 @@ def autenticar_bling() -> str:
 
 @mcp.tool()
 def listar_produtos_bling(nome: str = "", pagina: int = 1, limite: int = 100) -> str:
-    """Lista produtos do Bling!. Filtra por nome se informado."""
+    """(ExpansaoPet) Lista produtos do Bling!. Filtra por nome se informado."""
     params: dict = {"pagina": pagina, "limite": limite}
     if nome:
         params["nome"] = nome
@@ -369,7 +369,7 @@ def listar_produtos_bling(nome: str = "", pagina: int = 1, limite: int = 100) ->
 
 @mcp.tool()
 def listar_contatos_bling(nome: str = "", pagina: int = 1, limite: int = 100) -> str:
-    """Lista contatos (clientes/fornecedores) do Bling!. Filtra por nome se informado."""
+    """(ExpansaoPet) Lista contatos (clientes/fornecedores) do Bling!. Filtra por nome se informado."""
     params: dict = {"pagina": pagina, "limite": limite}
     if nome:
         params["nome"] = nome
@@ -386,7 +386,7 @@ def listar_contatos_bling(nome: str = "", pagina: int = 1, limite: int = 100) ->
 @mcp.tool()
 def listar_pedidos_venda_bling(pagina: int = 1, limite: int = 100, situacao: int = 0) -> str:
     """
-    Lista pedidos de venda do Bling!.
+    (ExpansaoPet) Lista pedidos de venda do Bling!.
     situacao: 0=todos, 6=em aberto, 9=atendido, 12=cancelado
     """
     params: dict = {"pagina": pagina, "limite": limite}
@@ -447,7 +447,7 @@ def buscar_pedido_bling(id_pedido: int) -> str:
 
 @mcp.tool()
 def consultar_estoque_bling(id_produto: int) -> str:
-    """Consulta o saldo de estoque de um produto pelo seu ID."""
+    """(ExpansaoPet) Consulta o saldo de estoque de um produto pelo seu ID."""
     token = _bling_get_token()
     # Endpoint requer colchetes literais na query string — não usar params={}
     url = f"{BLING_BASE_URL}/estoques/saldos?idsProdutos[]={id_produto}"
@@ -478,7 +478,7 @@ def consultar_estoque_bling(id_produto: int) -> str:
 
 @mcp.tool()
 def atualizar_produto_bling(id_produto: int, preco: float = 0.0, nome: str = "", codigo: str = "") -> str:
-    """Atualiza preço, nome e/ou código de um produto no Bling! pelo seu ID."""
+    """(ExpansaoPet) Atualiza preço, nome e/ou código de um produto no Bling! pelo seu ID."""
     _require_write()
     if not preco and not nome and not codigo:
         return "Nenhum campo informado para atualizar."
@@ -512,7 +512,7 @@ def atualizar_produto_bling(id_produto: int, preco: float = 0.0, nome: str = "",
 @mcp.tool()
 def criar_pedido_venda_bling(id_contato: int, itens: list, numero_pedido_externo: str = "", observacoes: str = "") -> str:
     """
-    Cria um pedido de venda no Bling!.
+    (ExpansaoPet) Cria um pedido de venda no Bling!.
     itens: lista de dicts com {id_produto_bling, descricao, quantidade, valor}
     """
     _require_write()
