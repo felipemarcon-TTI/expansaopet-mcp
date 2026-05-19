@@ -408,7 +408,7 @@ def buscar_pedido_bling(id_pedido: int) -> str:
     """Busca os detalhes completos de um pedido de venda pelo ID, incluindo todos os itens/produtos."""
     pedido = _bling_get(f"/pedidos/vendas/{id_pedido}").get("data", {})
     if not pedido:
-        return f"Pedido {id_pedido} não encontrado."
+        return f"Pedido {id_pedido} nao encontrado."
 
     contato  = pedido.get("contato", {}).get("nome", "?")
     data     = pedido.get("data", "-")
@@ -427,31 +427,22 @@ def buscar_pedido_bling(id_pedido: int) -> str:
             valor     = item.get("valor", 0)
             subtotal  = qtd * valor
             linhas_itens.append(
-                f"  - {nome_prod} | Cód: {codigo} | {qtd}x R$ {valor:.2f} = R$ {subtotal:.2f}"
+                f"  - {nome_prod} | Cod: {codigo} | {qtd}x R$ {valor:.2f} = R$ {subtotal:.2f}"
             )
-        itens_str = "
-".join(linhas_itens)
+        itens_str = "\n".join(linhas_itens)
     else:
         itens_str = "  (sem itens)"
 
     resultado = (
-        f"**Pedido #{id_pedido}**
-"
-        f"- Data: {data}
-"
-        f"- Cliente: {contato}
-"
-        f"- Situação: {situacao}
-"
-        f"- Total: R$ {total:.2f}
-"
+        f"**Pedido #{id_pedido}**\n"
+        f"- Data: {data}\n"
+        f"- Cliente: {contato}\n"
+        f"- Situacao: {situacao}\n"
+        f"- Total: R$ {total:.2f}\n"
     )
     if obs:
-        resultado += f"- Observações: {obs}
-"
-    resultado += f"
-**Itens ({len(itens)}):**
-{itens_str}"
+        resultado += f"- Observacoes: {obs}\n"
+    resultado += f"\n**Itens ({len(itens)}):**\n{itens_str}"
     return resultado
 
 @mcp.tool()
