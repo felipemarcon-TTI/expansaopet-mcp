@@ -445,7 +445,7 @@ def listar_pedidos_venda_bling(pagina: int = 1, limite: int = 100, situacao: int
 
 @mcp.tool()
 def buscar_pedido_bling(id_pedido: int) -> str:
-    """Busca os detalhes completos de um pedido de venda pelo ID, incluindo todos os itens/produtos."""
+    """(ExpansaoPet) Busca os detalhes completos de um pedido de venda pelo ID, incluindo itens."""
     pedido = _bling_get(f"/pedidos/vendas/{id_pedido}").get("data", {})
     if not pedido:
         return f"Pedido {id_pedido} nao encontrado."
@@ -484,6 +484,79 @@ def buscar_pedido_bling(id_pedido: int) -> str:
         resultado += f"- Observacoes: {obs}\n"
     resultado += f"\n**Itens ({len(itens)}):**\n{itens_str}"
     return resultado
+
+
+@mcp.tool()
+def relatorio_mais_vendidos_bling(
+    data_inicio: str = "",
+    data_fim: str = "",
+    limite: int = 10,
+    max_pedidos: int = 100,
+    situacao: int = 9,
+) -> str:
+    """(ExpansaoPet) Relatório dos produtos mais vendidos num período.
+    data_inicio/data_fim: YYYY-MM-DD. situacao: 9=atendido (padrão), 0=todos.
+    limite: top N produtos no resultado. max_pedidos: máximo de pedidos a analisar (padrão 100).
+    """
+    params: dict = {"pagina": 1, "limite": 100}
+    if situacao:
+        params["idSituacao"] = situacao
+    if data_inicio:
+        params["dataInicial"] = data_inicio
+    if data_fim:
+        params["dataFinal"] = data_fim
+
+    todos_pedidos: list = []
+    pagina = 1
+    while len(todos_pedidos) < max_pedidos:
+        params["pagina"] = pagina
+        batch = _bling_get("/pedidos/vendas", params).get("data", [])
+        if not batch:
+            break
+        todos_pedidos.extend(batch)
+        if len(batch) < 100:
+            break
+        pagina += 1
+
+    if not todos_pedidos:
+        return "Nenhum pedido encontrado no período."
+
+    contagem: dict[str, dict] = {}
+    total_analisados = 0
+    for pedido in todos_pedidos[:max_pedidos]:
+        try:
+            detalhes = _bling_get(f"/pedidos/vendas/{pedido['id']}").get("data", {})
+            for item in detalhes.get("itens", []):
+                produto = item.get("produto") or {}
+                codigo = produto.get("codigo") or ""
+                nome = produto.get("nome") or item.get("descricao") or "?"
+                chave = codigo if codigo else nome
+                qtd = float(item.get("quantidade", 0))
+                valor = float(item.get("valor", 0))
+                if chave not in contagem:
+                    contagem[chave] = {"nome": nome, "codigo": codigo, "qtd": 0.0, "total": 0.0}
+                contagem[chave]["qtd"] += qtd
+                contagem[chave]["total"] += qtd * valor
+            total_analisados += 1
+        except Exception:
+            continue
+
+    if not contagem:
+        return f"Nenhum item encontrado nos {total_analisados} pedido(s) analisado(s)."
+
+    top = sorted(contagem.values(), key=lambda x: x["qtd"], reverse=True)[:limite]
+
+    titulo = f"**Top {len(top)} produtos mais vendidos**"
+    if data_inicio or data_fim:
+        titulo += f" ({data_inicio or '?'} a {data_fim or '?'})"
+    titulo += f"\n_(baseado em {total_analisados} pedido(s))_\n"
+
+    linhas = [
+        f"{i+1}. {p['nome']} | Cod: {p['codigo'] or '-'} | {p['qtd']:.0f} unid. | R$ {p['total']:.2f}"
+        for i, p in enumerate(top)
+    ]
+    return titulo + "\n".join(linhas)
+
 
 @mcp.tool()
 def relatorio_mais_vendidos_bling(data_inicio: str = "2026-01-01", data_fim: str = "", top_n: int = 20) -> str:
