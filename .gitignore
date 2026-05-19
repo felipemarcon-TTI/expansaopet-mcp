@@ -1,0 +1,7 @@
+.env
+.expansaopet-bling/
+.bling/
+venv/
+__pycache__/
+*.pyc
+*.pyo
