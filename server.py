@@ -119,9 +119,41 @@ def _bling_credentials_header() -> str:
     raw = f"{BLING_CLIENT_ID}:{BLING_CLIENT_SECRET}".encode()
     return "Basic " + base64.b64encode(raw).decode()
 
+def _persist_refresh_token_to_railway(refresh_token: str) -> None:
+    api_token      = os.environ.get("RAILWAY_API_TOKEN", "")
+    project_id     = os.environ.get("RAILWAY_PROJECT_ID", "")
+    environment_id = os.environ.get("RAILWAY_ENVIRONMENT_ID", "")
+    service_id     = os.environ.get("RAILWAY_SERVICE_ID", "")
+    if not all([api_token, project_id, environment_id, service_id, refresh_token]):
+        return
+    query = """
+    mutation variableUpsert($input: VariableUpsertInput!) {
+        variableUpsert(input: $input)
+    }
+    """
+    variables = {
+        "input": {
+            "projectId": project_id,
+            "environmentId": environment_id,
+            "serviceId": service_id,
+            "name": "BLING_REFRESH_TOKEN",
+            "value": refresh_token,
+        }
+    }
+    try:
+        requests.post(
+            "https://backboard.railway.app/graphql/v2",
+            headers={"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"},
+            json={"query": query, "variables": variables},
+            timeout=10,
+        )
+    except Exception:
+        pass
+
 def _bling_save_tokens(data: dict) -> None:
     BLING_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     BLING_TOKEN_FILE.write_text(json.dumps(data))
+    _persist_refresh_token_to_railway(data.get("refresh_token", ""))
 
 def _bling_load_tokens() -> dict | None:
     if BLING_TOKEN_FILE.exists():
