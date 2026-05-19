@@ -487,84 +487,13 @@ def buscar_pedido_bling(id_pedido: int) -> str:
 
 
 @mcp.tool()
-def relatorio_mais_vendidos_bling(
-    data_inicio: str = "",
-    data_fim: str = "",
-    limite: int = 10,
-    max_pedidos: int = 100,
-    situacao: int = 9,
-) -> str:
-    """(ExpansaoPet) Relatório dos produtos mais vendidos num período.
-    data_inicio/data_fim: YYYY-MM-DD. situacao: 9=atendido (padrão), 0=todos.
-    limite: top N produtos no resultado. max_pedidos: máximo de pedidos a analisar (padrão 100).
-    """
-    params: dict = {"pagina": 1, "limite": 100}
-    if situacao:
-        params["idSituacao"] = situacao
-    if data_inicio:
-        params["dataInicial"] = data_inicio
-    if data_fim:
-        params["dataFinal"] = data_fim
-
-    todos_pedidos: list = []
-    pagina = 1
-    while len(todos_pedidos) < max_pedidos:
-        params["pagina"] = pagina
-        batch = _bling_get("/pedidos/vendas", params).get("data", [])
-        if not batch:
-            break
-        todos_pedidos.extend(batch)
-        if len(batch) < 100:
-            break
-        pagina += 1
-
-    if not todos_pedidos:
-        return "Nenhum pedido encontrado no período."
-
-    contagem: dict[str, dict] = {}
-    total_analisados = 0
-    for pedido in todos_pedidos[:max_pedidos]:
-        try:
-            detalhes = _bling_get(f"/pedidos/vendas/{pedido['id']}").get("data", {})
-            for item in detalhes.get("itens", []):
-                produto = item.get("produto") or {}
-                codigo = produto.get("codigo") or ""
-                nome = produto.get("nome") or item.get("descricao") or "?"
-                chave = codigo if codigo else nome
-                qtd = float(item.get("quantidade", 0))
-                valor = float(item.get("valor", 0))
-                if chave not in contagem:
-                    contagem[chave] = {"nome": nome, "codigo": codigo, "qtd": 0.0, "total": 0.0}
-                contagem[chave]["qtd"] += qtd
-                contagem[chave]["total"] += qtd * valor
-            total_analisados += 1
-        except Exception:
-            continue
-
-    if not contagem:
-        return f"Nenhum item encontrado nos {total_analisados} pedido(s) analisado(s)."
-
-    top = sorted(contagem.values(), key=lambda x: x["qtd"], reverse=True)[:limite]
-
-    titulo = f"**Top {len(top)} produtos mais vendidos**"
-    if data_inicio or data_fim:
-        titulo += f" ({data_inicio or '?'} a {data_fim or '?'})"
-    titulo += f"\n_(baseado em {total_analisados} pedido(s))_\n"
-
-    linhas = [
-        f"{i+1}. {p['nome']} | Cod: {p['codigo'] or '-'} | {p['qtd']:.0f} unid. | R$ {p['total']:.2f}"
-        for i, p in enumerate(top)
-    ]
-    return titulo + "\n".join(linhas)
-
-
-@mcp.tool()
-def relatorio_mais_vendidos_bling(data_inicio: str = "2026-01-01", data_fim: str = "", top_n: int = 20) -> str:
+def relatorio_mais_vendidos_bling(data_inicio: str = "2026-01-01", data_fim: str = "", top_n: int = 20, situacao: int = 9) -> str:
     """
     (ExpansaoPet) Gera relatorio dos produtos mais vendidos no periodo.
     data_inicio: YYYY-MM-DD (padrao: 2026-01-01)
     data_fim: YYYY-MM-DD (padrao: hoje)
     top_n: quantos produtos mostrar (padrao: 20)
+    situacao: 0=todos, 6=em aberto, 9=atendido (padrao), 12=cancelado
     """
     from collections import defaultdict
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -576,7 +505,9 @@ def relatorio_mais_vendidos_bling(data_inicio: str = "2026-01-01", data_fim: str
     todos_ids: list[int] = []
     pagina = 1
     while True:
-        params = {"pagina": pagina, "limite": 100, "dataInicial": data_inicio, "dataFinal": data_fim}
+        params: dict = {"pagina": pagina, "limite": 100, "dataInicial": data_inicio, "dataFinal": data_fim}
+        if situacao:
+            params["idSituacao"] = situacao
         data = _bling_get("/pedidos/vendas", params).get("data", [])
         if not data:
             break
@@ -594,7 +525,7 @@ def relatorio_mais_vendidos_bling(data_inicio: str = "2026-01-01", data_fim: str
         except Exception:
             return {}
 
-    produtos: dict = defaultdict(lambda: {"qtd": 0.0, "receita": 0.0, "pedidos": 0})
+    produtos: dict = {}
 
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(_buscar, id_p): id_p for id_p in todos_ids}
@@ -605,10 +536,12 @@ def relatorio_mais_vendidos_bling(data_inicio: str = "2026-01-01", data_fim: str
             for item in pedido.get("itens", []):
                 prod = item.get("produto", {})
                 nome = prod.get("nome") or item.get("descricao") or "?"
-                codigo = prod.get("codigo") or "-"
-                chave = nome + "||" + codigo
+                codigo = prod.get("codigo") or ""
+                chave = codigo if codigo else nome  # codigo e chave unica; fallback em nome
                 qtd = float(item.get("quantidade", 0))
                 valor = float(item.get("valor", 0))
+                if chave not in produtos:
+                    produtos[chave] = {"nome": nome, "codigo": codigo, "qtd": 0.0, "receita": 0.0, "pedidos": 0}
                 produtos[chave]["qtd"] += qtd
                 produtos[chave]["receita"] += qtd * valor
                 produtos[chave]["pedidos"] += 1
@@ -616,15 +549,14 @@ def relatorio_mais_vendidos_bling(data_inicio: str = "2026-01-01", data_fim: str
     if not produtos:
         return "Nenhum produto encontrado nos pedidos do periodo."
 
-    ranking = sorted(produtos.items(), key=lambda x: x[1]["qtd"], reverse=True)[:top_n]
+    ranking = sorted(produtos.values(), key=lambda x: x["qtd"], reverse=True)[:top_n]
     header = "**Produtos Mais Vendidos (" + data_inicio + " a " + data_fim + ") - " + str(len(todos_ids)) + " pedidos**"
     linhas = [header, ""]
     linhas.append("| # | Produto | Cod | Qtd Vendida | Receita Total | Em Pedidos |")
     linhas.append("|---|---------|-----|-------------|---------------|------------|")
-    for i, (chave, dados) in enumerate(ranking, 1):
-        nome, codigo = chave.split("||", 1)
-        nome_curto = (nome[:57] + "...") if len(nome) > 60 else nome
-        row = "| " + str(i) + " | " + nome_curto + " | " + codigo
+    for i, dados in enumerate(ranking, 1):
+        nome_curto = (dados["nome"][:57] + "...") if len(dados["nome"]) > 60 else dados["nome"]
+        row = "| " + str(i) + " | " + nome_curto + " | " + (dados["codigo"] or "-")
         row += " | " + str(int(dados["qtd"])) + " | R$ " + format(dados["receita"], ".2f") + " | " + str(dados["pedidos"]) + " |"
         linhas.append(row)
 
