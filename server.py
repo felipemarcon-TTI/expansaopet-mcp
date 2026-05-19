@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import secrets
+import threading
 import urllib.parse as _urlparse
 from datetime import date
 from pathlib import Path
@@ -13,6 +14,8 @@ import requests
 from mcp.server.fastmcp import FastMCP
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
+
+_token_refresh_lock = threading.Lock()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -129,31 +132,36 @@ def _bling_load_tokens() -> dict | None:
         return {"access_token": access, "refresh_token": refresh}
     return None
 
-def _bling_refresh_token() -> str:
-    tokens = _bling_load_tokens()
-    if not tokens:
-        raise RuntimeError("Não autenticado. Use a ferramenta `autenticar_bling` primeiro.")
-    resp = requests.post(
-        f"{BLING_BASE_URL}/oauth/token",
-        headers={"Authorization": _bling_credentials_header(), "Content-Type": "application/x-www-form-urlencoded"},
-        data={"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"]},
-    )
-    resp.raise_for_status()
-    new_tokens = resp.json()
-    _bling_save_tokens(new_tokens)
-    return new_tokens["access_token"]
+def _bling_refresh_token(old_access_token: str = "") -> str:
+    """Renova o access token de forma thread-safe. Se outro thread ja renovou, retorna o token atual."""
+    with _token_refresh_lock:
+        tokens = _bling_load_tokens()
+        if not tokens:
+            raise RuntimeError("Nao autenticado. Use a ferramenta `autenticar_bling` primeiro.")
+        # Se o token ja foi renovado por outro thread, retorna o novo sem chamar a API
+        if old_access_token and tokens.get("access_token") != old_access_token:
+            return tokens["access_token"]
+        resp = requests.post(
+            f"{BLING_BASE_URL}/oauth/token",
+            headers={"Authorization": _bling_credentials_header(), "Content-Type": "application/x-www-form-urlencoded"},
+            data={"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"]},
+        )
+        resp.raise_for_status()
+        new_tokens = resp.json()
+        _bling_save_tokens(new_tokens)
+        return new_tokens["access_token"]
 
 def _bling_get_token() -> str:
     tokens = _bling_load_tokens()
     if not tokens:
-        raise RuntimeError("Não autenticado. Use a ferramenta `autenticar_bling` primeiro.")
+        raise RuntimeError("Nao autenticado. Use a ferramenta `autenticar_bling` primeiro.")
     return tokens["access_token"]
 
 def _bling_get(path: str, params: dict | None = None) -> dict:
     token = _bling_get_token()
     resp = requests.get(f"{BLING_BASE_URL}{path}", headers={"Authorization": f"Bearer {token}"}, params=params or {})
     if resp.status_code == 401:
-        token = _bling_refresh_token()
+        token = _bling_refresh_token(old_access_token=token)
         resp = requests.get(f"{BLING_BASE_URL}{path}", headers={"Authorization": f"Bearer {token}"}, params=params or {})
     resp.raise_for_status()
     return resp.json()
