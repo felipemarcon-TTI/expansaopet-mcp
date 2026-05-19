@@ -404,6 +404,57 @@ def listar_pedidos_venda_bling(pagina: int = 1, limite: int = 100, situacao: int
 
 
 @mcp.tool()
+def buscar_pedido_bling(id_pedido: int) -> str:
+    """Busca os detalhes completos de um pedido de venda pelo ID, incluindo todos os itens/produtos."""
+    pedido = _bling_get(f"/pedidos/vendas/{id_pedido}").get("data", {})
+    if not pedido:
+        return f"Pedido {id_pedido} não encontrado."
+
+    contato   = pedido.get("contato", {}).get("nome", "?")
+    data      = pedido.get("data", "-")
+    situacao  = pedido.get("situacao", {}).get("nome", "-")
+    total     = pedido.get("totalProdutos", 0)
+    obs       = pedido.get("observacoes", "")
+
+    itens = pedido.get("itens", [])
+    if itens:
+        linhas_itens = []
+        for item in itens:
+            produto   = item.get("produto", {})
+            nome_prod = produto.get("nome") or item.get("descricao") or "-"
+            codigo    = produto.get("codigo") or "-"
+            qtd       = item.get("quantidade", 0)
+            valor     = item.get("valor", 0)
+            subtotal  = qtd * valor
+            linhas_itens.append(
+                f"  - {nome_prod} | Cód: {codigo} | {qtd}x R$ {valor:.2f} = R$ {subtotal:.2f}"
+            )
+        itens_str = "
+".join(linhas_itens)
+    else:
+        itens_str = "  (sem itens)"
+
+    resultado = (
+        f"**Pedido #{id_pedido}**
+"
+        f"- Data: {data}
+"
+        f"- Cliente: {contato}
+"
+        f"- Situação: {situacao}
+"
+        f"- Total: R$ {total:.2f}
+"
+    )
+    if obs:
+        resultado += f"- Observações: {obs}
+"
+    resultado += f"
+**Itens ({len(itens)}):**
+{itens_str}"
+    return resultado
+
+@mcp.tool()
 def consultar_estoque_bling(id_produto: int) -> str:
     """Consulta o saldo de estoque de um produto pelo seu ID."""
     token = _bling_get_token()
