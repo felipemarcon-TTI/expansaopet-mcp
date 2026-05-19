@@ -410,11 +410,11 @@ def buscar_pedido_bling(id_pedido: int) -> str:
     if not pedido:
         return f"Pedido {id_pedido} não encontrado."
 
-    contato   = pedido.get("contato", {}).get("nome", "?")
-    data      = pedido.get("data", "-")
-    situacao  = pedido.get("situacao", {}).get("nome", "-")
-    total     = pedido.get("totalProdutos", 0)
-    obs       = pedido.get("observacoes", "")
+    contato  = pedido.get("contato", {}).get("nome", "?")
+    data     = pedido.get("data", "-")
+    situacao = pedido.get("situacao", {}).get("nome", "-")
+    total    = pedido.get("totalProdutos", 0)
+    obs      = pedido.get("observacoes", "")
 
     itens = pedido.get("itens", [])
     if itens:
