@@ -722,4 +722,4 @@ async def admin_export(request: Request) -> JSONResponse:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(_AuthMiddleware(mcp.sse_app()), host="0.0.0.0", port=_PORT)
+    uvicorn.run(_AuthMiddleware(mcp.streamable_http_app()), host="0.0.0.0", port=_PORT)
