@@ -495,13 +495,7 @@ def buscar_pedido_bling(id_pedido: int) -> str:
 
 @mcp.tool()
 def relatorio_mais_vendidos_bling(data_inicio: str = "2026-01-01", data_fim: str = "", top_n: int = 20, situacao: int = 9) -> str:
-    """
-    (ExpansaoPet) Gera relatorio dos produtos mais vendidos no periodo.
-    data_inicio: YYYY-MM-DD (padrao: 2026-01-01)
-    data_fim: YYYY-MM-DD (padrao: hoje)
-    top_n: quantos produtos mostrar (padrao: 20)
-    situacao: 0=todos, 6=em aberto, 9=atendido (padrao), 12=cancelado
-    """
+    """(ExpansaoPet) Produtos mais vendidos no periodo. data_inicio/data_fim: YYYY-MM-DD. top_n: quantidade (pad 20). situacao: 0=todos,6=aberto,9=atendido(pad),12=cancelado."""
     from collections import defaultdict
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from datetime import date as _date
@@ -634,11 +628,8 @@ def atualizar_produto_bling(id_produto: int, preco: float = 0.0, nome: str = "",
 
 
 @mcp.tool()
-def criar_pedido_venda_bling(id_contato: int, itens: list, numero_pedido_externo: str = "", observacoes: str = "") -> str:
-    """
-    (ExpansaoPet) Cria um pedido de venda no Bling!.
-    itens: lista de dicts com {id_produto_bling, descricao, quantidade, valor}
-    """
+def criar_pedido_venda_bling(id_contato: int, itens: list[dict], numero_pedido_externo: str = "", observacoes: str = "") -> str:
+    """(ExpansaoPet) Cria pedido de venda no Bling. itens: lista de dicts {id_produto_bling, descricao, quantidade, valor}."""
     _require_write()
     bling_itens = []
     for item in itens:
@@ -725,6 +716,58 @@ async def admin_export(request: Request) -> JSONResponse:
     return JSONResponse(users)
 
 
+
+# ── MCP 2024-11-05 compatibility ──────────────────────────────────────────────
+
+def _strip_output_schema(body: bytes) -> bytes:
+    if b'"outputSchema"' not in body:
+        return body
+    text = body.decode("utf-8", errors="replace")
+    result = []
+    for line in text.splitlines(keepends=True):
+        if line.startswith("data: "):
+            try:
+                d = json.loads(line[6:])
+                if isinstance(d, dict) and "tools" in d.get("result", {}):
+                    for t in d["result"]["tools"]:
+                        t.pop("outputSchema", None)
+                        t.get("inputSchema", {}).pop("title", None)
+                    line = f"data: {json.dumps(d, ensure_ascii=False)}
+"
+            except Exception:
+                pass
+        result.append(line)
+    return "".join(result).encode("utf-8")
+
+
+class _McpCompatMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("path", "") not in ("/mcp", "/messages/"):
+            await self.app(scope, receive, send)
+            return
+        chunks: list[bytes] = []
+        start_msg: dict = {}
+
+        async def _send(msg):
+            if msg["type"] == "http.response.start":
+                start_msg.update(msg)
+            elif msg["type"] == "http.response.body":
+                chunks.append(msg.get("body", b""))
+                if not msg.get("more_body", False):
+                    full = _strip_output_schema(b"".join(chunks))
+                    hdrs = [
+                        (k, str(len(full)).encode() if k == b"content-length" else v)
+                        for k, v in start_msg.get("headers", [])
+                    ]
+                    await send({**start_msg, "headers": hdrs})
+                    await send({"type": "http.response.body", "body": full, "more_body": False})
+
+        await self.app(scope, receive, _send)
+
+
 # ── Entrypoint ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -743,4 +786,4 @@ if __name__ == "__main__":
                 await self.http_app(scope, receive, send)
 
     combined = _CombinedApp(mcp.streamable_http_app(), mcp.sse_app())
-    uvicorn.run(_AuthMiddleware(combined), host="0.0.0.0", port=_PORT)
+    uvicorn.run(_McpCompatMiddleware(_AuthMiddleware(combined)), host="0.0.0.0", port=_PORT)
