@@ -119,13 +119,13 @@ def _bling_credentials_header() -> str:
     raw = f"{BLING_CLIENT_ID}:{BLING_CLIENT_SECRET}".encode()
     return "Basic " + base64.b64encode(raw).decode()
 
-def _persist_refresh_token_to_railway(refresh_token: str) -> None:
+def _persist_refresh_token_to_railway(refresh_token: str) -> bool:
     api_token      = os.environ.get("RAILWAY_API_TOKEN", "")
     project_id     = os.environ.get("RAILWAY_PROJECT_ID", "")
     environment_id = os.environ.get("RAILWAY_ENVIRONMENT_ID", "")
     service_id     = os.environ.get("RAILWAY_SERVICE_ID", "")
     if not all([api_token, project_id, environment_id, service_id, refresh_token]):
-        return
+        return False
     query = """
     mutation variableUpsert($input: VariableUpsertInput!) {
         variableUpsert(input: $input)
@@ -147,13 +147,14 @@ def _persist_refresh_token_to_railway(refresh_token: str) -> None:
             json={"query": query, "variables": variables},
             timeout=10,
         )
+        return True
     except Exception:
-        pass
+        return False
 
-def _bling_save_tokens(data: dict) -> None:
+def _bling_save_tokens(data: dict) -> bool:
     BLING_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     BLING_TOKEN_FILE.write_text(json.dumps(data))
-    _persist_refresh_token_to_railway(data.get("refresh_token", ""))
+    return _persist_refresh_token_to_railway(data.get("refresh_token", ""))
 
 def _bling_load_tokens() -> dict | None:
     if BLING_TOKEN_FILE.exists():
@@ -355,15 +356,21 @@ async def bling_callback_route(request: Request) -> HTMLResponse:
         return resp.json()
 
     tokens = await anyio.to_thread.run_sync(_exchange)
-    _bling_save_tokens(tokens)
-    refresh = tokens.get("refresh_token", "")
-    access  = tokens.get("access_token", "")
-    html = f"""<!DOCTYPE html><html><body style="font-family:sans-serif;max-width:700px;margin:40px auto;padding:20px">
+    railway_saved = _bling_save_tokens(tokens)
+
+    if railway_saved:
+        html = """<!DOCTYPE html><html><body style="font-family:sans-serif;max-width:500px;margin:40px auto;padding:20px;text-align:center">
+<h2 style="color:green">&#10003; Bling! conectado com sucesso!</h2>
+<p>A autenticação foi concluída. Pode fechar esta aba.</p>
+</body></html>"""
+    else:
+        refresh = tokens.get("refresh_token", "")
+        access  = tokens.get("access_token", "")
+        html = f"""<!DOCTYPE html><html><body style="font-family:sans-serif;max-width:700px;margin:40px auto;padding:20px">
 <h2 style="color:green">Bling! conectado com sucesso!</h2>
-<p>Salve o <strong>Refresh Token</strong> abaixo como variável <code>BLING_REFRESH_TOKEN</code> no Railway
-para que o servidor se autentique automaticamente após restarts:</p>
+<p><strong>Atenção (admin):</strong> RAILWAY_API_TOKEN não configurado — salve manualmente o Refresh Token abaixo como variável <code>BLING_REFRESH_TOKEN</code> no Railway:</p>
 <textarea rows="4" style="width:100%;font-family:monospace;font-size:12px" onclick="this.select()">{refresh}</textarea>
-<p style="color:#888;font-size:13px">Access Token (expira em breve — não precisa salvar):<br>
+<p style="color:#888;font-size:13px">Access Token (expira em breve):<br>
 <code style="font-size:11px;word-break:break-all">{access}</code></p>
 <p>Pode fechar esta aba.</p>
 </body></html>"""
