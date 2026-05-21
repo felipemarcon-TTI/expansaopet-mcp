@@ -722,4 +722,18 @@ async def admin_export(request: Request) -> JSONResponse:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(_AuthMiddleware(mcp.streamable_http_app()), host="0.0.0.0", port=_PORT)
+
+    class _CombinedApp:
+        def __init__(self, http_app, sse_app):
+            self.http_app = http_app
+            self.sse_app = sse_app
+
+        async def __call__(self, scope, receive, send):
+            path = scope.get("path", "")
+            if path == "/sse" or path.startswith("/messages"):
+                await self.sse_app(scope, receive, send)
+            else:
+                await self.http_app(scope, receive, send)
+
+    combined = _CombinedApp(mcp.streamable_http_app(), mcp.sse_app())
+    uvicorn.run(_AuthMiddleware(combined), host="0.0.0.0", port=_PORT)
