@@ -786,22 +786,4 @@ if __name__ == "__main__":
                 await self.http_app(scope, receive, send)
 
     combined = _CombinedApp(mcp.streamable_http_app(), mcp.sse_app())
-
-    import threading
-
-    def _startup_token_check():
-        import time
-        time.sleep(2)
-        tokens = _bling_load_tokens()
-        if not tokens:
-            print("[startup] Bling: sem tokens configurados")
-            return
-        try:
-            _bling_refresh_token()
-            print("[startup] Bling: tokens validados e rotacionados")
-        except Exception as e:
-            print("[startup] Bling: AVISO - token invalido: " + str(e))
-
-    threading.Thread(target=_startup_token_check, daemon=True).start()
-
     uvicorn.run(_McpCompatMiddleware(_AuthMiddleware(combined)), host="0.0.0.0", port=_PORT)
