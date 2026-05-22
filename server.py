@@ -141,12 +141,13 @@ def _persist_refresh_token_to_railway(refresh_token: str) -> bool:
         }
     }
     try:
-        requests.post(
+        resp = requests.post(
             "https://backboard.railway.app/graphql/v2",
             headers={"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"},
             json={"query": query, "variables": variables},
             timeout=10,
         )
+        resp.raise_for_status()
         return True
     except Exception:
         return False
@@ -785,4 +786,22 @@ if __name__ == "__main__":
                 await self.http_app(scope, receive, send)
 
     combined = _CombinedApp(mcp.streamable_http_app(), mcp.sse_app())
+
+    import threading
+
+    def _startup_token_check():
+        import time
+        time.sleep(2)
+        tokens = _bling_load_tokens()
+        if not tokens:
+            print("[startup] Bling: sem tokens configurados")
+            return
+        try:
+            _bling_refresh_token()
+            print("[startup] Bling: tokens validados e rotacionados")
+        except Exception as e:
+            print("[startup] Bling: AVISO - token invalido: " + str(e))
+
+    threading.Thread(target=_startup_token_check, daemon=True).start()
+
     uvicorn.run(_McpCompatMiddleware(_AuthMiddleware(combined)), host="0.0.0.0", port=_PORT)
