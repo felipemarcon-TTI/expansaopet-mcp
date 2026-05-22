@@ -124,7 +124,9 @@ def _persist_refresh_token_to_railway(refresh_token: str) -> bool:
     project_id     = os.environ.get("RAILWAY_PROJECT_ID", "")
     environment_id = os.environ.get("RAILWAY_ENVIRONMENT_ID", "")
     service_id     = os.environ.get("RAILWAY_SERVICE_ID", "")
-    if not all([api_token, project_id, environment_id, service_id, refresh_token]):
+    missing = [k for k, v in {"RAILWAY_API_TOKEN": api_token, "RAILWAY_PROJECT_ID": project_id, "RAILWAY_ENVIRONMENT_ID": environment_id, "RAILWAY_SERVICE_ID": service_id}.items() if not v]
+    if missing or not refresh_token:
+        print(f"[railway] persist skipped - missing vars: {missing}")
         return False
     query = """
     mutation variableUpsert($input: VariableUpsertInput!) {
@@ -148,8 +150,14 @@ def _persist_refresh_token_to_railway(refresh_token: str) -> bool:
             timeout=10,
         )
         resp.raise_for_status()
+        body = resp.json()
+        if body.get("errors"):
+            print(f"[railway] variableUpsert errors: {body['errors']}")
+            return False
+        print("[railway] variableUpsert OK - BLING_REFRESH_TOKEN atualizado")
         return True
-    except Exception:
+    except Exception as e:
+        print(f"[railway] variableUpsert exception: {e}")
         return False
 
 def _bling_save_tokens(data: dict) -> bool:
