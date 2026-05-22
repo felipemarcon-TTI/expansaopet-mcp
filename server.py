@@ -238,7 +238,7 @@ async def health_check(request: Request) -> HTMLResponse:
 
 @mcp.custom_route("/version", methods=["GET"])
 async def version(request: Request) -> HTMLResponse:
-    return HTMLResponse("v2 - 9 tools (buscar_pedido + relatorio_mais_vendidos)", status_code=200)
+    return HTMLResponse("v3 - 22 tools (financeiro, estoque, clientes, operacional)", status_code=200)
 
 
 # ── MCP OAuth2 (para claude.ai browser connector) ────────────────────────────
@@ -664,6 +664,548 @@ def criar_pedido_venda_bling(id_contato: int, itens: list[dict], numero_pedido_e
         body["observacoes"] = observacoes
     pedido = _bling_post("/pedidos/vendas", body).get("data", {})
     return f"✓ Pedido de venda #{pedido.get('id', '?')} criado no Bling!"
+
+
+
+# ── Financeiro ────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def resumo_financeiro(periodo: str = "mes") -> str:
+    """(ExpansaoPet) Faturamento do dia, semana ou mes com comparativo do periodo anterior. periodo: dia, semana ou mes."""
+    from datetime import timedelta
+    hoje = date.today()
+    if periodo == "dia":
+        inicio = hoje
+        inicio_ant, fim_ant = hoje - timedelta(days=1), hoje - timedelta(days=1)
+        label, label_ant = "hoje", "ontem"
+    elif periodo == "semana":
+        inicio = hoje - timedelta(days=hoje.weekday())
+        inicio_ant = inicio - timedelta(weeks=1)
+        fim_ant = inicio - timedelta(days=1)
+        label, label_ant = "esta semana", "semana passada"
+    else:
+        inicio = hoje.replace(day=1)
+        inicio_ant = hoje.replace(year=hoje.year - 1, month=12, day=1) if hoje.month == 1 else hoje.replace(month=hoje.month - 1, day=1)
+        fim_ant = inicio - timedelta(days=1)
+        label, label_ant = "este mes", "mes passado"
+    def _fat(d1, d2):
+        params = {"dataInicial": str(d1), "dataFinal": str(d2), "idSituacao": 9, "pagina": 1, "limite": 100}
+        total, count, pag = 0.0, 0, 1
+        while True:
+            params["pagina"] = pag
+            pedidos = _bling_get("/pedidos/vendas", params).get("data", [])
+            if not pedidos:
+                break
+            for p in pedidos:
+                total += float(p.get("totalProdutos", 0) or 0)
+                count += 1
+            if len(pedidos) < 100:
+                break
+            pag += 1
+        return total, count
+    ta, ca = _fat(inicio, hoje)
+    tp, cp = _fat(inicio_ant, fim_ant)
+    variacao = ((ta - tp) / tp * 100) if tp > 0 else 0
+    sinal = "+" if variacao >= 0 else "-"
+    tm = ta / ca if ca > 0 else 0
+    return (
+        f"**Resumo Financeiro - {label.capitalize()}**\n\n"
+        f"- Faturamento: R$ {ta:,.2f}\n- Pedidos atendidos: {ca}\n- Ticket medio: R$ {tm:,.2f}\n\n"
+        f"**Comparativo ({label_ant}):** R$ {tp:,.2f} ({cp} pedidos)\nVariacao: {sinal} {abs(variacao):.1f}%"
+    )
+
+
+@mcp.tool()
+def contas_a_receber(dias_proximos: int = 30, incluir_vencidas: bool = True) -> str:
+    """(ExpansaoPet) Contas a receber em aberto - vencendo nos proximos N dias e vencidas."""
+    from datetime import timedelta
+    hoje = date.today()
+    data_ini = str(hoje - timedelta(days=365)) if incluir_vencidas else str(hoje)
+    contas = _bling_get("/contas/receber", {
+        "dataVencimentoInicial": data_ini,
+        "dataVencimentoFinal": str(hoje + timedelta(days=dias_proximos)),
+        "situacao": 1, "pagina": 1, "limite": 100,
+    }).get("data", [])
+    if not contas:
+        return "Nenhuma conta a receber encontrada no periodo."
+    hs = str(hoje)
+    venc = [c for c in contas if c.get("dataVencimento", "") < hs]
+    aven = [c for c in contas if c.get("dataVencimento", "") >= hs]
+    tv = sum(float(c.get("valor", 0)) for c in venc)
+    ta = sum(float(c.get("valor", 0)) for c in aven)
+    L = [f"**Contas a Receber - Total: R$ {tv+ta:,.2f}**\n"]
+    if venc:
+        L.append(f"VENCIDAS ({len(venc)}) - R$ {tv:,.2f}:")
+        for c in sorted(venc, key=lambda x: x.get("dataVencimento", "")):
+            nome = c.get("contato", {}).get("nome", "?")
+            L.append(f"  - {c.get('dataVencimento')} | {nome} | R$ {float(c.get('valor', 0)):,.2f}")
+    if aven:
+        L.append(f"\nA VENCER ({len(aven)}) - R$ {ta:,.2f}:")
+        for c in sorted(aven, key=lambda x: x.get("dataVencimento", "")):
+            nome = c.get("contato", {}).get("nome", "?")
+            L.append(f"  - {c.get('dataVencimento')} | {nome} | R$ {float(c.get('valor', 0)):,.2f}")
+    return "\n".join(L)
+
+
+@mcp.tool()
+def contas_a_pagar(dias_proximos: int = 30, incluir_vencidas: bool = True) -> str:
+    """(ExpansaoPet) Contas a pagar em aberto - vencendo nos proximos N dias e vencidas."""
+    from datetime import timedelta
+    hoje = date.today()
+    data_ini = str(hoje - timedelta(days=365)) if incluir_vencidas else str(hoje)
+    contas = _bling_get("/contas/pagar", {
+        "dataVencimentoInicial": data_ini,
+        "dataVencimentoFinal": str(hoje + timedelta(days=dias_proximos)),
+        "situacao": 1, "pagina": 1, "limite": 100,
+    }).get("data", [])
+    if not contas:
+        return "Nenhuma conta a pagar encontrada no periodo."
+    hs = str(hoje)
+    venc = [c for c in contas if c.get("dataVencimento", "") < hs]
+    aven = [c for c in contas if c.get("dataVencimento", "") >= hs]
+    tv = sum(float(c.get("valor", 0)) for c in venc)
+    ta = sum(float(c.get("valor", 0)) for c in aven)
+    L = [f"**Contas a Pagar - Total: R$ {tv+ta:,.2f}**\n"]
+    if venc:
+        L.append(f"VENCIDAS ({len(venc)}) - R$ {tv:,.2f}:")
+        for c in sorted(venc, key=lambda x: x.get("dataVencimento", "")):
+            nome = c.get("contato", {}).get("nome", "?")
+            L.append(f"  - {c.get('dataVencimento')} | {nome} | R$ {float(c.get('valor', 0)):,.2f}")
+    if aven:
+        L.append(f"\nA VENCER ({len(aven)}) - R$ {ta:,.2f}:")
+        for c in sorted(aven, key=lambda x: x.get("dataVencimento", "")):
+            nome = c.get("contato", {}).get("nome", "?")
+            L.append(f"  - {c.get('dataVencimento')} | {nome} | R$ {float(c.get('valor', 0)):,.2f}")
+    return "\n".join(L)
+
+
+@mcp.tool()
+def fluxo_de_caixa(dias_proximos: int = 30) -> str:
+    """(ExpansaoPet) Entradas (contas a receber) vs saidas (contas a pagar) nos proximos N dias."""
+    from datetime import timedelta
+    hoje = date.today()
+    pb = {
+        "dataVencimentoInicial": str(hoje),
+        "dataVencimentoFinal": str(hoje + timedelta(days=dias_proximos)),
+        "situacao": 1, "pagina": 1, "limite": 100,
+    }
+    entradas = _bling_get("/contas/receber", pb).get("data", [])
+    saidas   = _bling_get("/contas/pagar",   pb).get("data", [])
+    te = sum(float(c.get("valor", 0)) for c in entradas)
+    ts = sum(float(c.get("valor", 0)) for c in saidas)
+    saldo = te - ts
+    status = "OK" if saldo >= 0 else "ATENCAO"
+    L = [
+        f"**Fluxo de Caixa - Proximos {dias_proximos} dias**\n",
+        f"- Entradas previstas: R$ {te:,.2f} ({len(entradas)} contas)",
+        f"- Saidas previstas:   R$ {ts:,.2f} ({len(saidas)} contas)",
+        f"- Saldo projetado [{status}]: R$ {saldo:,.2f}",
+        "\n**Por semana:**",
+    ]
+    for s in range(0, dias_proximos, 7):
+        ini = hoje + timedelta(days=s)
+        fim = hoje + timedelta(days=min(s + 6, dias_proximos))
+        e  = sum(float(c.get("valor", 0)) for c in entradas if ini <= date.fromisoformat(c.get("dataVencimento", "9999-01-01")) <= fim)
+        sg = sum(float(c.get("valor", 0)) for c in saidas   if ini <= date.fromisoformat(c.get("dataVencimento", "9999-01-01")) <= fim)
+        L.append(f"  {ini.strftime('%d/%m')}-{fim.strftime('%d/%m')}: +R$ {e:,.2f} / -R$ {sg:,.2f} = R$ {e-sg:,.2f}")
+    return "\n".join(L)
+
+
+# ── Estoque ───────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def alertas_estoque_baixo(limite: int = 100) -> str:
+    """(ExpansaoPet) Lista produtos com estoque fisico abaixo do minimo cadastrado ou zerado."""
+    from concurrent.futures import ThreadPoolExecutor
+    produtos = _bling_get("/produtos", {"pagina": 1, "limite": limite}).get("data", [])
+    if not produtos:
+        return "Nenhum produto encontrado."
+    def _saldo(prod: dict) -> dict:
+        try:
+            url = f"{BLING_BASE_URL}/estoques/saldos?idsProdutos[]={prod['id']}"
+            token = _bling_get_token()
+            resp = requests.get(url, headers={"Authorization": f"Bearer {token}"})
+            if resp.status_code == 401:
+                token = _bling_refresh_token()
+                resp = requests.get(url, headers={"Authorization": f"Bearer {token}"})
+            saldo = sum(i.get("saldoFisicoTotal", i.get("saldoFisico", 0)) for i in resp.json().get("data", []))
+        except Exception:
+            saldo = None
+        return {"prod": prod, "saldo": saldo}
+    alertas = []
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for r in ex.map(_saldo, produtos):
+            if r["saldo"] is None:
+                continue
+            prod = r["prod"]
+            minimo = float(prod.get("estoqueMinimo", 0) or 0)
+            if r["saldo"] <= minimo:
+                alertas.append({
+                    "id": prod["id"], "nome": prod.get("nome", "?"),
+                    "codigo": prod.get("codigo", "-"), "saldo": r["saldo"], "minimo": minimo,
+                })
+    if not alertas:
+        return "Nenhum produto com estoque abaixo do minimo."
+    alertas.sort(key=lambda x: x["saldo"])
+    L = [f"ALERTA: {len(alertas)} produto(s) com estoque critico:\n"]
+    for a in alertas:
+        status = "ZERADO" if a["saldo"] == 0 else "BAIXO"
+        L.append(f"- [{status}] [{a['id']}] {a['nome']} | Cod: {a['codigo']} | Estoque: {a['saldo']} | Minimo: {a['minimo']}")
+    return "\n".join(L)
+
+
+@mcp.tool()
+def produtos_sem_movimento(dias: int = 30, limite_produtos: int = 100) -> str:
+    """(ExpansaoPet) Produtos cadastrados que nao aparecem em nenhum pedido nos ultimos N dias."""
+    from datetime import timedelta
+    hoje = date.today()
+    produtos = _bling_get("/produtos", {"pagina": 1, "limite": limite_produtos}).get("data", [])
+    if not produtos:
+        return "Nenhum produto encontrado."
+    params = {"dataInicial": str(hoje - timedelta(days=dias)), "dataFinal": str(hoje), "pagina": 1, "limite": 100}
+    ids_vendidos: set = set()
+    pagina = 1
+    while True:
+        params["pagina"] = pagina
+        pedidos = _bling_get("/pedidos/vendas", params).get("data", [])
+        if not pedidos:
+            break
+        for p in pedidos:
+            for item in p.get("itens", []):
+                id_prod = item.get("produto", {}).get("id")
+                if id_prod:
+                    ids_vendidos.add(id_prod)
+        if len(pedidos) < 100:
+            break
+        pagina += 1
+    parados = [p for p in produtos if p["id"] not in ids_vendidos]
+    if not parados:
+        return f"Todos os produtos tiveram movimento nos ultimos {dias} dias."
+    L = [f"**{len(parados)} produto(s) sem movimento nos ultimos {dias} dias:**\n"]
+    for p in parados:
+        L.append(f"- [{p['id']}] {p['nome']} | Cod: {p.get('codigo') or '-'} | Preco: R$ {p.get('preco', 0):.2f}")
+    return "\n".join(L)
+
+
+@mcp.tool()
+def sugestao_reposicao(dias_analise: int = 30, dias_cobertura: int = 30, limite: int = 100) -> str:
+    """(ExpansaoPet) Sugere reposicao de estoque com base na velocidade de venda dos ultimos N dias."""
+    from datetime import timedelta
+    from concurrent.futures import ThreadPoolExecutor
+    hoje = date.today()
+    params = {"dataInicial": str(hoje - timedelta(days=dias_analise)), "dataFinal": str(hoje), "idSituacao": 9, "pagina": 1, "limite": 100}
+    vendas: dict = {}
+    pagina = 1
+    while True:
+        params["pagina"] = pagina
+        pedidos = _bling_get("/pedidos/vendas", params).get("data", [])
+        if not pedidos:
+            break
+        for p in pedidos:
+            for item in p.get("itens", []):
+                id_prod = item.get("produto", {}).get("id")
+                if not id_prod:
+                    continue
+                qtd = float(item.get("quantidade", 0))
+                if id_prod not in vendas:
+                    vendas[id_prod] = {"nome": item.get("produto", {}).get("nome") or item.get("descricao", "?"), "qtd": 0.0}
+                vendas[id_prod]["qtd"] += qtd
+        if len(pedidos) < 100:
+            break
+        pagina += 1
+    if not vendas:
+        return "Nenhuma venda encontrada no periodo para calcular reposicao."
+    def _saldo(id_prod: int) -> tuple:
+        try:
+            url = f"{BLING_BASE_URL}/estoques/saldos?idsProdutos[]={id_prod}"
+            resp = requests.get(url, headers={"Authorization": f"Bearer {_bling_get_token()}"})
+            return id_prod, float(sum(i.get("saldoFisicoTotal", i.get("saldoFisico", 0)) for i in resp.json().get("data", [])))
+        except Exception:
+            return id_prod, 0.0
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for id_p, saldo in ex.map(_saldo, list(vendas.keys())[:limite]):
+            vendas[id_p]["estoque"] = saldo
+    sugestoes = []
+    for d in vendas.values():
+        qtd_dia = d["qtd"] / dias_analise
+        repor = max(0.0, qtd_dia * dias_cobertura - d.get("estoque", 0))
+        if repor > 0:
+            sugestoes.append({"nome": d["nome"], "estoque": d.get("estoque", 0), "media_dia": round(qtd_dia, 2), "repor": round(repor, 1)})
+    if not sugestoes:
+        return f"Estoque suficiente para todos os produtos por {dias_cobertura} dias."
+    sugestoes.sort(key=lambda x: x["repor"], reverse=True)
+    L = [f"**Sugestao de Reposicao - Cobertura de {dias_cobertura} dias**\n",
+         "| Produto | Estoque | Vend/dia | Repor |",
+         "|---------|---------|----------|-------|"]
+    for s in sugestoes:
+        nome_curto = (s["nome"][:40] + "...") if len(s["nome"]) > 43 else s["nome"]
+        L.append(f"| {nome_curto} | {s['estoque']} | {s['media_dia']} | **{s['repor']}** |")
+    return "\n".join(L)
+
+
+# ── Clientes ──────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def clientes_inativos(dias: int = 60) -> str:
+    """(ExpansaoPet) Clientes que nao realizaram pedidos nos ultimos N dias."""
+    from datetime import timedelta
+    hoje = date.today()
+    data_corte = str(hoje - timedelta(days=dias))
+    ativos: set = set()
+    params = {"dataInicial": data_corte, "dataFinal": str(hoje), "pagina": 1, "limite": 100}
+    pagina = 1
+    while True:
+        params["pagina"] = pagina
+        pedidos = _bling_get("/pedidos/vendas", params).get("data", [])
+        if not pedidos:
+            break
+        for p in pedidos:
+            id_c = p.get("contato", {}).get("id")
+            if id_c:
+                ativos.add(id_c)
+        if len(pedidos) < 100:
+            break
+        pagina += 1
+    params2 = {"dataInicial": str(hoje - timedelta(days=365)), "dataFinal": data_corte, "pagina": 1, "limite": 100}
+    ultimo_pedido: dict = {}
+    pagina = 1
+    while True:
+        params2["pagina"] = pagina
+        pedidos = _bling_get("/pedidos/vendas", params2).get("data", [])
+        if not pedidos:
+            break
+        for p in pedidos:
+            contato = p.get("contato", {})
+            id_c = contato.get("id")
+            if not id_c or id_c in ativos:
+                continue
+            data_p = p.get("data", "")
+            if id_c not in ultimo_pedido or data_p > ultimo_pedido[id_c]["data"]:
+                ultimo_pedido[id_c] = {"nome": contato.get("nome", "?"), "data": data_p, "total": float(p.get("totalProdutos", 0))}
+        if len(pedidos) < 100:
+            break
+        pagina += 1
+    if not ultimo_pedido:
+        return f"Todos os clientes compraram nos ultimos {dias} dias."
+    inativos = sorted(ultimo_pedido.values(), key=lambda x: x["data"])
+    L = [f"**{len(inativos)} cliente(s) inativos ha mais de {dias} dias:**\n"]
+    for c in inativos:
+        dias_sem = (hoje - date.fromisoformat(c["data"])).days if c["data"] else "?"
+        L.append(f"- {c['nome']} | Ultimo pedido: {c['data']} ({dias_sem} dias) | R$ {c['total']:.2f}")
+    return "\n".join(L)
+
+
+@mcp.tool()
+def top_clientes(data_inicio: str = "", data_fim: str = "", top_n: int = 10) -> str:
+    """(ExpansaoPet) Ranking dos melhores clientes por valor total comprado no periodo."""
+    hoje = date.today()
+    if not data_inicio:
+        data_inicio = str(hoje.replace(day=1))
+    if not data_fim:
+        data_fim = str(hoje)
+    params = {"dataInicial": data_inicio, "dataFinal": data_fim, "idSituacao": 9, "pagina": 1, "limite": 100}
+    clientes: dict = {}
+    pagina = 1
+    while True:
+        params["pagina"] = pagina
+        pedidos = _bling_get("/pedidos/vendas", params).get("data", [])
+        if not pedidos:
+            break
+        for p in pedidos:
+            contato = p.get("contato", {})
+            id_c = contato.get("id", "sem_id")
+            total = float(p.get("totalProdutos", 0) or 0)
+            if id_c not in clientes:
+                clientes[id_c] = {"nome": contato.get("nome", "?"), "total": 0.0, "pedidos": 0}
+            clientes[id_c]["total"] += total
+            clientes[id_c]["pedidos"] += 1
+        if len(pedidos) < 100:
+            break
+        pagina += 1
+    if not clientes:
+        return f"Nenhum pedido atendido no periodo {data_inicio} a {data_fim}."
+    ranking = sorted(clientes.values(), key=lambda x: x["total"], reverse=True)[:top_n]
+    total_geral = sum(c["total"] for c in clientes.values())
+    L = [f"**Top {top_n} Clientes - {data_inicio} a {data_fim}**\n",
+         "| # | Cliente | Total | Pedidos | % do total |",
+         "|---|---------|-------|---------|-----------|"]
+    for i, c in enumerate(ranking, 1):
+        pct = c["total"] / total_geral * 100 if total_geral > 0 else 0
+        nome_curto = (c["nome"][:35] + "...") if len(c["nome"]) > 38 else c["nome"]
+        L.append(f"| {i} | {nome_curto} | R$ {c['total']:,.2f} | {c['pedidos']} | {pct:.1f}% |")
+    return "\n".join(L)
+
+
+@mcp.tool()
+def historico_cliente(id_contato: int, limite: int = 20) -> str:
+    """(ExpansaoPet) Historico completo de pedidos e total gasto por um cliente no ultimo ano."""
+    from datetime import timedelta
+    hoje = date.today()
+    try:
+        nome = _bling_get(f"/contatos/{id_contato}").get("data", {}).get("nome", f"Contato {id_contato}")
+    except Exception:
+        nome = f"Contato {id_contato}"
+    params = {"dataInicial": str(hoje - timedelta(days=365)), "dataFinal": str(hoje), "pagina": 1, "limite": 100}
+    todos = []
+    pagina = 1
+    while True:
+        params["pagina"] = pagina
+        pedidos = _bling_get("/pedidos/vendas", params).get("data", [])
+        if not pedidos:
+            break
+        todos.extend(p for p in pedidos if p.get("contato", {}).get("id") == id_contato)
+        if len(pedidos) < 100:
+            break
+        pagina += 1
+    if not todos:
+        return f"Nenhum pedido para o cliente {id_contato} no ultimo ano."
+    todos.sort(key=lambda x: x.get("data", ""), reverse=True)
+    total_gasto = sum(float(p.get("totalProdutos", 0)) for p in todos)
+    tm = total_gasto / len(todos)
+    L = [f"**Historico de {nome}**\n",
+         f"- Total de pedidos: {len(todos)}",
+         f"- Total gasto (ultimo ano): R$ {total_gasto:,.2f}",
+         f"- Ticket medio: R$ {tm:,.2f}\n",
+         "**Ultimos pedidos:**"]
+    for p in todos[:limite]:
+        situacao = p.get("situacao", {}).get("nome", "-")
+        L.append(f"- [{p['id']}] {p.get('data', '-')} | R$ {float(p.get('totalProdutos', 0)):,.2f} | {situacao}")
+    return "\n".join(L)
+
+
+# ── Operacional ───────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def pedidos_pendentes(dias_atraso: int = 0) -> str:
+    """(ExpansaoPet) Lista pedidos em aberto. dias_atraso > 0 mostra apenas os abertos ha N+ dias."""
+    from datetime import timedelta
+    params = {"idSituacao": 6, "pagina": 1, "limite": 100}
+    todos = []
+    pagina = 1
+    while True:
+        params["pagina"] = pagina
+        pedidos = _bling_get("/pedidos/vendas", params).get("data", [])
+        if not pedidos:
+            break
+        todos.extend(pedidos)
+        if len(pedidos) < 100:
+            break
+        pagina += 1
+    if not todos:
+        return "Nenhum pedido em aberto no momento."
+    if dias_atraso > 0:
+        corte = str(date.today() - timedelta(days=dias_atraso))
+        todos = [p for p in todos if p.get("data", "9999-99-99") <= corte]
+    if not todos:
+        return f"Nenhum pedido em aberto com mais de {dias_atraso} dias."
+    hoje = date.today()
+    todos.sort(key=lambda x: x.get("data", ""))
+    total = sum(float(p.get("totalProdutos", 0)) for p in todos)
+    L = [f"**{len(todos)} pedido(s) em aberto - R$ {total:,.2f} total**\n"]
+    for p in todos:
+        data_p = p.get("data", "-")
+        diasd = (hoje - date.fromisoformat(data_p)).days if data_p != "-" else "?"
+        cliente = p.get("contato", {}).get("nome", "?")
+        L.append(f"- [{p['id']}] {data_p} ({diasd}d) | {cliente} | R$ {float(p.get('totalProdutos', 0)):,.2f}")
+    return "\n".join(L)
+
+
+@mcp.tool()
+def resumo_do_dia() -> str:
+    """(ExpansaoPet) Dashboard do dia: vendas de hoje, pedidos em aberto, contas vencidas e estoque critico."""
+    from datetime import timedelta
+    from concurrent.futures import ThreadPoolExecutor
+    hoje = date.today()
+    hs = str(hoje)
+    def _vendas():
+        p = _bling_get("/pedidos/vendas", {"dataInicial": hs, "dataFinal": hs, "pagina": 1, "limite": 100}).get("data", [])
+        return len(p), sum(float(x.get("totalProdutos", 0)) for x in p)
+    def _abertos():
+        return len(_bling_get("/pedidos/vendas", {"idSituacao": 6, "pagina": 1, "limite": 100}).get("data", []))
+    def _vencidas():
+        pb = {"dataVencimentoInicial": str(hoje - timedelta(days=365)), "dataVencimentoFinal": str(hoje - timedelta(days=1)), "situacao": 1, "pagina": 1, "limite": 100}
+        return len(_bling_get("/contas/receber", pb).get("data", [])), len(_bling_get("/contas/pagar", pb).get("data", []))
+    def _criticos():
+        criticos = 0
+        for p in _bling_get("/produtos", {"pagina": 1, "limite": 50}).get("data", []):
+            minimo = float(p.get("estoqueMinimo", 0) or 0)
+            if minimo <= 0:
+                continue
+            try:
+                url = f"{BLING_BASE_URL}/estoques/saldos?idsProdutos[]={p['id']}"
+                resp = requests.get(url, headers={"Authorization": f"Bearer {_bling_get_token()}"})
+                if sum(i.get("saldoFisicoTotal", i.get("saldoFisico", 0)) for i in resp.json().get("data", [])) <= minimo:
+                    criticos += 1
+            except Exception:
+                pass
+        return criticos
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        fv = ex.submit(_vendas)
+        fa = ex.submit(_abertos)
+        fc = ex.submit(_vencidas)
+        fe = ex.submit(_criticos)
+        np, tv = fv.result()
+        na = fa.result()
+        rv, pv = fc.result()
+        nc = fe.result()
+    tm = tv / np if np > 0 else 0
+    L = [f"**Dashboard - {hoje.strftime('%d/%m/%Y')}**\n",
+         "**Vendas de hoje:**",
+         f"- Pedidos: {np} | Faturamento: R$ {tv:,.2f} | Ticket medio: R$ {tm:,.2f}",
+         "\n**Alertas:**"]
+    if na: L.append(f"- {na} pedido(s) em aberto")
+    if rv: L.append(f"- {rv} conta(s) a receber VENCIDA(S)")
+    if pv: L.append(f"- {pv} conta(s) a pagar VENCIDA(S)")
+    if nc: L.append(f"- {nc} produto(s) com estoque critico")
+    if not any([na, rv, pv, nc]):
+        L.append("- Nenhum alerta critico")
+    return "\n".join(L)
+
+
+@mcp.tool()
+def ticket_medio(data_inicio: str = "", data_fim: str = "", por_cliente: bool = False) -> str:
+    """(ExpansaoPet) Ticket medio do periodo. Se por_cliente=True, mostra o ticket de cada cliente."""
+    hoje = date.today()
+    if not data_inicio:
+        data_inicio = str(hoje.replace(day=1))
+    if not data_fim:
+        data_fim = str(hoje)
+    params = {"dataInicial": data_inicio, "dataFinal": data_fim, "idSituacao": 9, "pagina": 1, "limite": 100}
+    clientes: dict = {}
+    total_geral, total_pedidos = 0.0, 0
+    pagina = 1
+    while True:
+        params["pagina"] = pagina
+        pedidos = _bling_get("/pedidos/vendas", params).get("data", [])
+        if not pedidos:
+            break
+        for p in pedidos:
+            total = float(p.get("totalProdutos", 0) or 0)
+            total_geral += total
+            total_pedidos += 1
+            if por_cliente:
+                contato = p.get("contato", {})
+                id_c = contato.get("id", "sem_id")
+                if id_c not in clientes:
+                    clientes[id_c] = {"nome": contato.get("nome", "?"), "total": 0.0, "pedidos": 0}
+                clientes[id_c]["total"] += total
+                clientes[id_c]["pedidos"] += 1
+        if len(pedidos) < 100:
+            break
+        pagina += 1
+    if total_pedidos == 0:
+        return f"Nenhum pedido atendido no periodo {data_inicio} a {data_fim}."
+    ticket = total_geral / total_pedidos
+    L = [f"**Ticket Medio - {data_inicio} a {data_fim}**\n",
+         f"- Total faturado: R$ {total_geral:,.2f}",
+         f"- Total de pedidos: {total_pedidos}",
+         f"- **Ticket medio geral: R$ {ticket:,.2f}**"]
+    if por_cliente and clientes:
+        L.append("\n**Por cliente:**")
+        for c in sorted(clientes.values(), key=lambda x: x["total"] / x["pedidos"], reverse=True):
+            tm = c["total"] / c["pedidos"]
+            L.append(f"- {c['nome']}: R$ {tm:,.2f} ({c['pedidos']} pedidos, total R$ {c['total']:,.2f})")
+    return "\n".join(L)
 
 
 # ── Admin API ─────────────────────────────────────────────────────────────────
