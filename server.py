@@ -732,8 +732,7 @@ def _strip_output_schema(body: bytes) -> bytes:
                     for t in d["result"]["tools"]:
                         t.pop("outputSchema", None)
                         t.get("inputSchema", {}).pop("title", None)
-                    line = f"data: {json.dumps(d, ensure_ascii=False)}
-"
+                    line = f"data: {json.dumps(d, ensure_ascii=False)}\n"
             except Exception:
                 pass
         result.append(line)
