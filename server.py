@@ -22,7 +22,7 @@ _token_refresh_lock = threading.Lock()
 BLING_CLIENT_ID     = os.environ.get("BLING_CLIENT_ID", "")
 BLING_CLIENT_SECRET = os.environ.get("BLING_CLIENT_SECRET", "")
 BLING_BASE_URL      = "https://www.bling.com.br/Api/v3"
-BLING_TOKEN_FILE    = Path.home() / ".expansaopet-bling" / "tokens.json"
+BLING_TOKEN_FILE    = Path(os.environ.get("BLING_TOKEN_FILE", str(Path.home() / ".expansaopet-bling" / "tokens.json")))
 
 _PORT          = int(os.environ.get("PORT", 8000))
 _PUBLIC_DOMAIN = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
