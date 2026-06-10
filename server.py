@@ -181,9 +181,10 @@ def _bling_refresh_token(old_access_token: str = "") -> str:
         tokens = _bling_load_tokens()
         if not tokens:
             raise RuntimeError("Nao autenticado. Use a ferramenta `autenticar_bling` primeiro.")
-        # Se o token ja foi renovado por outro thread, retorna o novo sem chamar a API
-        if old_access_token and tokens.get("access_token") != old_access_token:
-            return tokens["access_token"]
+        current = tokens.get("access_token", "")
+        # Se outro thread ja renovou (token mudou, ou havia vazio e agora tem valor), retorna sem chamar a API
+        if current and current != old_access_token:
+            return current
         resp = requests.post(
             f"{BLING_BASE_URL}/oauth/token",
             headers={"Authorization": _bling_credentials_header(), "Content-Type": "application/x-www-form-urlencoded"},
@@ -1234,6 +1235,7 @@ def relatorio_diario(data: str = "") -> str:
         p = dict(params_base)
         while True:
             p["pagina"] = pag
+            time.sleep(0.35)
             itens = _bling_get("/pedidos/vendas", p).get("data", [])
             if not itens:
                 break
@@ -1241,10 +1243,9 @@ def relatorio_diario(data: str = "") -> str:
             if len(itens) < 100:
                 break
             pag += 1
-            time.sleep(0.3)
         return resultado
 
-    atendidos = _pag({"dataInicial": ds, "dataFinal": ds, "idSituacao": 9, "limite": 100})
+    atendidos  = _pag({"dataInicial": ds, "dataFinal": ds, "idSituacao": 9, "limite": 100})
     todos_dia  = _pag({"dataInicial": ds, "dataFinal": ds, "limite": 100})
 
     faturamento = sum(float(p.get("totalProdutos", 0)) for p in atendidos)
@@ -1252,28 +1253,26 @@ def relatorio_diario(data: str = "") -> str:
     ticket      = faturamento / n_pedidos if n_pedidos > 0 else 0
     clientes_unicos = {p.get("contato", {}).get("nome", "?") for p in atendidos}
 
-    # top produtos — busca detalhes apenas se volume razoavel
+    # top produtos — busca detalhes sequencialmente com throttle para evitar rate limit
     produtos_dia: dict = {}
     if 0 < n_pedidos <= 30:
-        def _det(pid: int) -> dict:
+        for p in atendidos:
             try:
-                return _bling_get(f"/pedidos/vendas/{pid}").get("data", {})
+                time.sleep(0.35)
+                pedido = _bling_get(f"/pedidos/vendas/{p['id']}").get("data", {})
             except Exception:
-                return {}
-        with ThreadPoolExecutor(max_workers=3) as ex:
-            futs = {ex.submit(_det, p["id"]): p["id"] for p in atendidos}
-            for fut in as_completed(futs):
-                for item in fut.result().get("itens", []):
-                    prod   = item.get("produto", {})
-                    nome   = prod.get("nome") or item.get("descricao") or "?"
-                    codigo = prod.get("codigo") or ""
-                    chave  = codigo if codigo else nome
-                    qtd    = float(item.get("quantidade", 0))
-                    val    = float(item.get("valor", 0))
-                    if chave not in produtos_dia:
-                        produtos_dia[chave] = {"nome": nome, "qtd": 0.0, "receita": 0.0}
-                    produtos_dia[chave]["qtd"]     += qtd
-                    produtos_dia[chave]["receita"] += qtd * val
+                continue
+            for item in pedido.get("itens", []):
+                prod   = item.get("produto", {})
+                nome   = prod.get("nome") or item.get("descricao") or "?"
+                codigo = prod.get("codigo") or ""
+                chave  = codigo if codigo else nome
+                qtd    = float(item.get("quantidade", 0))
+                val    = float(item.get("valor", 0))
+                if chave not in produtos_dia:
+                    produtos_dia[chave] = {"nome": nome, "qtd": 0.0, "receita": 0.0}
+                produtos_dia[chave]["qtd"]     += qtd
+                produtos_dia[chave]["receita"] += qtd * val
 
     # comparativo: dia anterior e media dos 7 dias anteriores
     ant        = alvo - timedelta(days=1)
