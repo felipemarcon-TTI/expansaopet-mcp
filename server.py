@@ -5,6 +5,7 @@ import json
 import os
 import secrets
 import threading
+import time
 import urllib.parse as _urlparse
 from datetime import date
 from pathlib import Path
@@ -238,7 +239,7 @@ async def health_check(request: Request) -> HTMLResponse:
 
 @mcp.custom_route("/version", methods=["GET"])
 async def version(request: Request) -> HTMLResponse:
-    return HTMLResponse("v3 - 22 tools (financeiro, estoque, clientes, operacional)", status_code=200)
+    return HTMLResponse("v4 - 23 tools (+ relatorio_diario; fix fluxo_de_caixa, rate limit)", status_code=200)
 
 
 # ── MCP OAuth2 (para claude.ai browser connector) ────────────────────────────
@@ -795,6 +796,13 @@ def fluxo_de_caixa(dias_proximos: int = 30) -> str:
     ts = sum(float(c.get("valor", 0)) for c in saidas)
     saldo = te - ts
     status = "OK" if saldo >= 0 else "ATENCAO"
+    def _dt(c):
+        v = c.get("dataVencimento")
+        try:
+            return date.fromisoformat(v) if v else date(9999, 1, 1)
+        except (ValueError, TypeError):
+            return date(9999, 1, 1)
+
     L = [
         f"**Fluxo de Caixa - Proximos {dias_proximos} dias**\n",
         f"- Entradas previstas: R$ {te:,.2f} ({len(entradas)} contas)",
@@ -805,8 +813,8 @@ def fluxo_de_caixa(dias_proximos: int = 30) -> str:
     for s in range(0, dias_proximos, 7):
         ini = hoje + timedelta(days=s)
         fim = hoje + timedelta(days=min(s + 6, dias_proximos))
-        e  = sum(float(c.get("valor", 0)) for c in entradas if ini <= date.fromisoformat(c.get("dataVencimento", "9999-01-01")) <= fim)
-        sg = sum(float(c.get("valor", 0)) for c in saidas   if ini <= date.fromisoformat(c.get("dataVencimento", "9999-01-01")) <= fim)
+        e  = sum(float(c.get("valor", 0)) for c in entradas if ini <= _dt(c) <= fim)
+        sg = sum(float(c.get("valor", 0)) for c in saidas   if ini <= _dt(c) <= fim)
         L.append(f"  {ini.strftime('%d/%m')}-{fim.strftime('%d/%m')}: +R$ {e:,.2f} / -R$ {sg:,.2f} = R$ {e-sg:,.2f}")
     return "\n".join(L)
 
@@ -919,10 +927,11 @@ def sugestao_reposicao(dias_analise: int = 30, dias_cobertura: int = 30, limite:
         try:
             url = f"{BLING_BASE_URL}/estoques/saldos?idsProdutos[]={id_prod}"
             resp = requests.get(url, headers={"Authorization": f"Bearer {_bling_get_token()}"})
+            time.sleep(0.35)
             return id_prod, float(sum(i.get("saldoFisicoTotal", i.get("saldoFisico", 0)) for i in resp.json().get("data", [])))
         except Exception:
             return id_prod, 0.0
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    with ThreadPoolExecutor(max_workers=2) as ex:
         for id_p, saldo in ex.map(_saldo, list(vendas.keys())[:limite]):
             vendas[id_p]["estoque"] = saldo
     sugestoes = []
@@ -966,6 +975,7 @@ def clientes_inativos(dias: int = 60) -> str:
         if len(pedidos) < 100:
             break
         pagina += 1
+        time.sleep(0.35)
     params2 = {"dataInicial": str(hoje - timedelta(days=365)), "dataFinal": data_corte, "pagina": 1, "limite": 100}
     ultimo_pedido: dict = {}
     pagina = 1
@@ -985,6 +995,7 @@ def clientes_inativos(dias: int = 60) -> str:
         if len(pedidos) < 100:
             break
         pagina += 1
+        time.sleep(0.35)
     if not ultimo_pedido:
         return f"Todos os clientes compraram nos ultimos {dias} dias."
     inativos = sorted(ultimo_pedido.values(), key=lambda x: x["data"])
@@ -1205,6 +1216,117 @@ def ticket_medio(data_inicio: str = "", data_fim: str = "", por_cliente: bool = 
         for c in sorted(clientes.values(), key=lambda x: x["total"] / x["pedidos"], reverse=True):
             tm = c["total"] / c["pedidos"]
             L.append(f"- {c['nome']}: R$ {tm:,.2f} ({c['pedidos']} pedidos, total R$ {c['total']:,.2f})")
+    return "\n".join(L)
+
+
+@mcp.tool()
+def relatorio_diario(data: str = "") -> str:
+    """(ExpansaoPet) Relatorio completo de um dia: vendas, top produtos, clientes, status dos pedidos e comparativo. data: YYYY-MM-DD (padrao: ontem)."""
+    from datetime import timedelta
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    hoje = date.today()
+    alvo = date.fromisoformat(data) if data else hoje - timedelta(days=1)
+    ds = str(alvo)
+
+    def _pag(params_base: dict) -> list:
+        resultado, pag = [], 1
+        p = dict(params_base)
+        while True:
+            p["pagina"] = pag
+            itens = _bling_get("/pedidos/vendas", p).get("data", [])
+            if not itens:
+                break
+            resultado.extend(itens)
+            if len(itens) < 100:
+                break
+            pag += 1
+            time.sleep(0.3)
+        return resultado
+
+    atendidos = _pag({"dataInicial": ds, "dataFinal": ds, "idSituacao": 9, "limite": 100})
+    todos_dia  = _pag({"dataInicial": ds, "dataFinal": ds, "limite": 100})
+
+    faturamento = sum(float(p.get("totalProdutos", 0)) for p in atendidos)
+    n_pedidos   = len(atendidos)
+    ticket      = faturamento / n_pedidos if n_pedidos > 0 else 0
+    clientes_unicos = {p.get("contato", {}).get("nome", "?") for p in atendidos}
+
+    # top produtos — busca detalhes apenas se volume razoavel
+    produtos_dia: dict = {}
+    if 0 < n_pedidos <= 30:
+        def _det(pid: int) -> dict:
+            try:
+                return _bling_get(f"/pedidos/vendas/{pid}").get("data", {})
+            except Exception:
+                return {}
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            futs = {ex.submit(_det, p["id"]): p["id"] for p in atendidos}
+            for fut in as_completed(futs):
+                for item in fut.result().get("itens", []):
+                    prod   = item.get("produto", {})
+                    nome   = prod.get("nome") or item.get("descricao") or "?"
+                    codigo = prod.get("codigo") or ""
+                    chave  = codigo if codigo else nome
+                    qtd    = float(item.get("quantidade", 0))
+                    val    = float(item.get("valor", 0))
+                    if chave not in produtos_dia:
+                        produtos_dia[chave] = {"nome": nome, "qtd": 0.0, "receita": 0.0}
+                    produtos_dia[chave]["qtd"]     += qtd
+                    produtos_dia[chave]["receita"] += qtd * val
+
+    # comparativo: dia anterior e media dos 7 dias anteriores
+    ant        = alvo - timedelta(days=1)
+    atend_ant  = _pag({"dataInicial": str(ant), "dataFinal": str(ant), "idSituacao": 9, "limite": 100})
+    fat_ant    = sum(float(p.get("totalProdutos", 0)) for p in atend_ant)
+
+    semana_ini = alvo - timedelta(days=7)
+    atend_7d   = _pag({"dataInicial": str(semana_ini), "dataFinal": str(ant), "idSituacao": 9, "limite": 100})
+    media_7d   = sum(float(p.get("totalProdutos", 0)) for p in atend_7d) / 7 if atend_7d else 0
+
+    def _var(atual, base):
+        if base <= 0:
+            return ""
+        v = (atual - base) / base * 100
+        return f" ({'+' if v >= 0 else ''}{v:.1f}% vs {base:,.2f})"
+
+    L = [f"**Relatório do Dia — {alvo.strftime('%d/%m/%Y')}**\n"]
+
+    L.append("**Vendas atendidas:**")
+    L.append(f"- Pedidos: {n_pedidos}")
+    L.append(f"- Faturamento: R$ {faturamento:,.2f}{_var(faturamento, fat_ant)}")
+    L.append(f"- Ticket médio: R$ {ticket:,.2f}")
+    L.append(f"- Clientes únicos: {len(clientes_unicos)}")
+    L.append(f"- Média diária (7d anteriores): R$ {media_7d:,.2f}")
+
+    if todos_dia:
+        por_status: dict = {}
+        for p in todos_dia:
+            s = p.get("situacao", {}).get("nome", "?")
+            por_status[s] = por_status.get(s, 0) + 1
+        L.append(f"\n**Pedidos criados no dia ({len(todos_dia)} total):**")
+        for s, q in sorted(por_status.items(), key=lambda x: -x[1]):
+            L.append(f"  - {s}: {q}")
+
+    if produtos_dia:
+        ranking = sorted(produtos_dia.values(), key=lambda x: x["qtd"], reverse=True)[:10]
+        L.append("\n**Top produtos do dia:**")
+        L.append("| # | Produto | Qtd | Receita |")
+        L.append("|---|---------|-----|---------|")
+        for i, d in enumerate(ranking, 1):
+            nome_c = (d["nome"][:40] + "...") if len(d["nome"]) > 43 else d["nome"]
+            L.append(f"| {i} | {nome_c} | {int(d['qtd'])} | R$ {d['receita']:,.2f} |")
+    elif n_pedidos > 30:
+        L.append(f"\n_(Volume alto — {n_pedidos} pedidos. Use relatorio_mais_vendidos_bling para o ranking do período.)_")
+
+    if clientes_unicos and n_pedidos <= 20:
+        L.append("\n**Clientes que compraram:**")
+        for c in sorted(clientes_unicos):
+            L.append(f"  - {c}")
+
+    if n_pedidos == 0:
+        L.append("\nNenhum pedido atendido neste dia.")
+
     return "\n".join(L)
 
 
